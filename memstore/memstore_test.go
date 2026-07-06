@@ -105,21 +105,24 @@ func TestQuery(t *testing.T) {
 	}
 
 	tests := []struct {
-		name string
-		from int64
-		to   int64
-		want []swage.Sample
+		name      string
+		queryName string
+		from      int64
+		to        int64
+		want      []swage.Sample
 	}{
 		{
-			name: "full range",
-			from: 0,
-			to:   10000,
-			want: samples,
+			name:      "full range",
+			queryName: "cpu",
+			from:      0,
+			to:        10000,
+			want:      samples,
 		},
 		{
-			name: "exact boundaries inclusive",
-			from: 2000,
-			to:   4000,
+			name:      "exact boundaries inclusive",
+			queryName: "cpu",
+			from:      2000,
+			to:        4000,
 			want: []swage.Sample{
 				{Name: "cpu", T: 2000, V: 2.0},
 				{Name: "cpu", T: 3000, V: 3.0},
@@ -127,27 +130,34 @@ func TestQuery(t *testing.T) {
 			},
 		},
 		{
-			name: "no samples in range",
-			from: 6000,
-			to:   9000,
-			want: nil,
+			name:      "no samples in range",
+			queryName: "cpu",
+			from:      6000,
+			to:        9000,
+			want:      nil,
 		},
 		{
-			name: "single sample",
-			from: 3000,
-			to:   3000,
+			name:      "single sample",
+			queryName: "cpu",
+			from:      3000,
+			to:        3000,
 			want: []swage.Sample{
 				{Name: "cpu", T: 3000, V: 3.0},
 			},
 		},
 		{
-			name: "range before all data",
-			from: 0,
-			to:   500,
-			want: nil,
+			name:      "range before all data",
+			queryName: "cpu",
+			from:      0,
+			to:        500,
+			want:      nil,
 		},
 		{
-			name: "nonexistent series",
+			name:      "nonexistent series",
+			queryName: "nonexistent",
+			from:      0,
+			to:        10000,
+			want:      nil,
 		},
 	}
 
@@ -160,14 +170,7 @@ func TestQuery(t *testing.T) {
 				t.Fatalf("Append() error = %v", err)
 			}
 
-			queryName := "cpu"
-			if tt.name == "nonexistent series" {
-				queryName = "nonexistent"
-				tt.from = 0
-				tt.to = 10000
-			}
-
-			got, err := s.Query(queryName, tt.from, tt.to)
+			got, err := s.Query(tt.queryName, tt.from, tt.to)
 			if err != nil {
 				t.Fatalf("Query() error = %v", err)
 			}
