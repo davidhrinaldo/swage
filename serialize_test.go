@@ -379,35 +379,25 @@ func TestReadSnapshotErrors(t *testing.T) {
 	}
 }
 
-func TestReadSnapshotSampleLimit(t *testing.T) {
+func TestReadSnapshotSampleLimitExceeded(t *testing.T) {
 	tests := []struct {
-		name      string
-		lines     int // number of sample lines to produce
-		limit     []int
-		wantError bool
+		name  string
+		lines int // number of sample lines to produce
+		limit []int
 	}{
 		{
-			name:      "default limit exceeded",
-			lines:     swage.DefaultMaxReadSamples + 1,
-			wantError: true,
+			name:  "default limit exceeded",
+			lines: swage.DefaultMaxReadSamples + 1,
 		},
 		{
-			name:      "custom limit exceeded",
-			lines:     101,
-			limit:     []int{100},
-			wantError: true,
+			name:  "custom limit exceeded",
+			lines: 101,
+			limit: []int{100},
 		},
 		{
-			name:      "custom limit not exceeded",
-			lines:     100,
-			limit:     []int{100},
-			wantError: false,
-		},
-		{
-			name:      "custom limit of 1",
-			lines:     2,
-			limit:     []int{1},
-			wantError: true,
+			name:  "custom limit of 1",
+			lines: 2,
+			limit: []int{1},
 		},
 	}
 
@@ -420,16 +410,26 @@ func TestReadSnapshotSampleLimit(t *testing.T) {
 			}
 
 			_, err := swage.ReadSnapshot(r, tt.limit...)
-			if tt.wantError && err == nil {
-				t.Fatalf("ReadSnapshot() expected error, got nil")
+			if err == nil {
+				t.Fatal("ReadSnapshot() expected error, got nil")
 			}
-			if !tt.wantError && err != nil {
-				t.Fatalf("ReadSnapshot() unexpected error: %v", err)
-			}
-			if tt.wantError && err != nil && !strings.Contains(err.Error(), "exceeds limit") {
+			if !strings.Contains(err.Error(), "exceeds limit") {
 				t.Errorf("error = %q, want it to mention exceeds limit", err)
 			}
 		})
+	}
+}
+
+func TestReadSnapshotSampleLimitNotExceeded(t *testing.T) {
+	r := &repeatingLineReader{
+		header:    []byte(`{"swage":1,"from":"2025-07-06T02:00:00Z","to":"2025-07-06T03:00:00Z","series":["cpu"]}` + "\n"),
+		line:      []byte(`{"s":"cpu","t":1720231200000,"v":1.0}` + "\n"),
+		remaining: 100,
+	}
+
+	_, err := swage.ReadSnapshot(r, 100)
+	if err != nil {
+		t.Fatalf("ReadSnapshot() unexpected error: %v", err)
 	}
 }
 
