@@ -1,6 +1,7 @@
 package swage
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -318,6 +319,137 @@ func (r *Recorder) DumpTo(w io.Writer, from, to time.Time, names ...string) erro
 	}
 
 	return nil
+}
+
+// WriteTo serializes the Snapshot to NDJSON in the .swage format.
+// The output consists of a header line followed by sample lines grouped
+// by series name (sorted), with timestamps ascending within each series.
+// Implements io.WriterTo.
+func (s *Snapshot) WriteTo(w io.Writer) (int64, error) {
+	cw := &countWriter{w: w}
+	enc := json.NewEncoder(cw)
+	enc.SetEscapeHTML(false)
+
+	// Collect and sort series names.
+	names := make([]string, 0, len(s.Series))
+	for name := range s.Series {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	// Write header.
+	hdr := dumpHeader{
+		Swage:  1,
+		From:   s.From.UTC().Format(time.RFC3339),
+		To:     s.To.UTC().Format(time.RFC3339),
+		Series: names,
+	}
+	if hdr.Series == nil {
+		hdr.Series = []string{}
+	}
+	if err := enc.Encode(hdr); err != nil {
+		return cw.n, fmt.Errorf("swage: write header: %w", err)
+	}
+
+	// Write sample lines per series.
+	for _, name := range names {
+		for _, p := range s.Series[name] {
+			if err := enc.Encode(dumpLine{S: name, T: p.T.UnixMilli(), V: p.V}); err != nil {
+				return cw.n, fmt.Errorf("swage: write sample: %w", err)
+			}
+		}
+	}
+
+	return cw.n, nil
+}
+
+// countWriter wraps an io.Writer and counts bytes written.
+type countWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// DefaultMaxReadSamples is the maximum number of samples ReadSnapshot will
+// parse before returning an error. Override per call by passing a limit to
+// ReadSnapshot. 1M samples ≈ 24 MB of Point structs.
+const DefaultMaxReadSamples = 1_000_000
+
+// ReadSnapshot deserializes NDJSON from an io.Reader into a Snapshot.
+// It rejects any format version other than 1. An optional maxSamples
+// argument caps how many sample lines are read (default: DefaultMaxReadSamples).
+func ReadSnapshot(r io.Reader, maxSamples ...int) (*Snapshot, error) {
+	limit := DefaultMaxReadSamples
+	if len(maxSamples) > 0 && maxSamples[0] > 0 {
+		limit = maxSamples[0]
+	}
+
+	scanner := bufio.NewScanner(r)
+
+	// Read header line.
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return nil, fmt.Errorf("swage: read header: %w", err)
+		}
+		return nil, fmt.Errorf("swage: empty input")
+	}
+
+	var hdr dumpHeader
+	if err := json.Unmarshal(scanner.Bytes(), &hdr); err != nil {
+		return nil, fmt.Errorf("swage: parse header: %w", err)
+	}
+	if hdr.Swage != 1 {
+		return nil, fmt.Errorf("swage: unsupported format version %d", hdr.Swage)
+	}
+
+	from, err := time.Parse(time.RFC3339, hdr.From)
+	if err != nil {
+		return nil, fmt.Errorf("swage: parse header from: %w", err)
+	}
+	to, err := time.Parse(time.RFC3339, hdr.To)
+	if err != nil {
+		return nil, fmt.Errorf("swage: parse header to: %w", err)
+	}
+
+	snap := &Snapshot{
+		From:   from,
+		To:     to,
+		Series: make(map[string][]Point),
+	}
+
+	// Read sample lines. Cap total samples to prevent OOM on malicious input.
+	n := 0
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		if n >= limit {
+			return nil, fmt.Errorf("swage: sample count exceeds limit (%d)", limit)
+		}
+		var sl dumpLine
+		if err := json.Unmarshal(line, &sl); err != nil {
+			return nil, fmt.Errorf("swage: parse sample line: %w", err)
+		}
+		if sl.S == "" {
+			return nil, fmt.Errorf("swage: sample line missing series name")
+		}
+		snap.Series[sl.S] = append(snap.Series[sl.S], Point{
+			T: time.UnixMilli(sl.T),
+			V: sl.V,
+		})
+		n++
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("swage: read samples: %w", err)
+	}
+
+	return snap, nil
 }
 
 // resolveNames returns the list of series names to query. If names is empty,

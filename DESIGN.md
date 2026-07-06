@@ -376,10 +376,16 @@ lines or change ordering — without ambiguity about backward compatibility.
 ### Serialization API
 
 ```go
-func (s *Snapshot) WriteTo(w io.Writer) (int64, error)  // from Snapshot struct
-func ReadSnapshot(r io.Reader) (*Snapshot, error)       // deserialize
-func (s *Snapshot) Summary(window time.Duration) *Summary // compute aggregates
+func (s *Snapshot) WriteTo(w io.Writer) (int64, error)              // from Snapshot struct
+func ReadSnapshot(r io.Reader, maxSamples ...int) (*Snapshot, error) // deserialize
+func (s *Snapshot) Summary(window time.Duration) *Summary            // compute aggregates
 ```
+
+`ReadSnapshot` caps total samples to prevent OOM on untrusted input.
+The default is `DefaultMaxReadSamples` (1,000,000 — ~24 MB of Point
+structs). Callers processing larger dumps can pass a higher limit:
+`ReadSnapshot(r, 5_000_000)`. The limit exists because `.swage` files
+are the unit of exchange and may come from untrusted sources.
 
 `Summary` on `Snapshot` is the same aggregation logic used by
 `Recorder.Summary()`. This makes summary computation available standalone
