@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"reflect"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -808,6 +809,108 @@ func TestStoreReceivesSortedBatch(t *testing.T) {
 	}
 	if !reflect.DeepEqual(received, want) {
 		t.Errorf("Store received:\n  %v\nwant:\n  %v", received, want)
+	}
+}
+
+func TestCloseDoesNotLeakGoroutines(t *testing.T) {
+	// Stabilize goroutine count — let background work from prior tests settle.
+	runtime.GC()
+	time.Sleep(10 * time.Millisecond)
+	before := runtime.NumGoroutine()
+
+	const n = 10
+	for i := 0; i < n; i++ {
+		store := memstore.New(0)
+		rec, err := swage.New(store, swage.Options{Horizon: time.Hour})
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		rec.RecordAt("cpu", time.UnixMilli(int64(1000+i)), float64(i))
+		rec.Close()
+		store.Close()
+	}
+
+	// Allow goroutines to exit.
+	runtime.GC()
+	time.Sleep(50 * time.Millisecond)
+
+	after := runtime.NumGoroutine()
+	leaked := after - before
+	if leaked > 2 {
+		t.Errorf("goroutine count grew by %d after creating and closing %d Recorders (before=%d, after=%d)",
+			leaked, n, before, after)
+	}
+}
+
+func TestMaxBufferSizeConcurrent(t *testing.T) {
+	store := memstore.New(0)
+	defer store.Close()
+
+	var drops int64
+	var dropMu sync.Mutex
+
+	const bufCap = 100
+
+	rec, err := swage.New(store, swage.Options{
+		Horizon:       time.Hour,
+		MaxBufferSize: bufCap,
+		FlushInterval: time.Hour, // no auto-flush — buffer must hit the cap
+		OnOverBudget: func(reason string, s swage.Sample) {
+			dropMu.Lock()
+			drops++
+			dropMu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer rec.Close()
+
+	const (
+		numGoroutines = 8
+		numPerG       = 100
+		total         = numGoroutines * numPerG
+	)
+
+	var wg sync.WaitGroup
+	for g := 0; g < numGoroutines; g++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < numPerG; i++ {
+				rec.RecordAt("cpu", time.UnixMilli(int64(id*numPerG+i+1)), float64(i))
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	if err := rec.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
+	got, err := store.Query("cpu", 0, int64(total+1))
+	if err != nil {
+		t.Fatalf("Query() error = %v", err)
+	}
+
+	dropMu.Lock()
+	recorded := len(got)
+	dropped := int(drops)
+	dropMu.Unlock()
+
+	// Every sample was either recorded or dropped — none lost silently.
+	if recorded+dropped != total {
+		t.Errorf("recorded (%d) + dropped (%d) = %d, want %d", recorded, dropped, recorded+dropped, total)
+	}
+
+	// The buffer cap was enforced — more samples were sent than the cap allows.
+	if dropped == 0 {
+		t.Errorf("expected some drops with %d concurrent writers into buffer of %d, got 0", total, bufCap)
+	}
+
+	// No more than bufCap samples should have been in any single batch.
+	if recorded > bufCap {
+		t.Errorf("recorded %d samples, but buffer cap is %d", recorded, bufCap)
 	}
 }
 

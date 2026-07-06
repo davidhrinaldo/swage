@@ -168,5 +168,5 @@ If you have a metrics backend, use it. swage is for when that's not feasible.
 
 ## Requirements
 
-- Go 1.25+
+- Go 1.26+
 - [ingot](https://github.com/davidhrinaldo/ingot)
